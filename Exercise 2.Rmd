@@ -1,0 +1,228 @@
+---
+title: "auction of xbox game"
+author: "Bashayr Alghamdi"
+date: "03/11/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# load packages
+library(tidyverse)
+library(rsample)
+library(caret)
+library(recipes)
+library(vip)
+library(dplyr)
+library(Metrics) 
+library(pls)
+
+```
+
+```{r}
+auction <- readr::read_csv("data/auctions.csv")
+spec(auction)
+```
+
+```{r}
+#Split into training vs testing data
+set.seed(123)
+split  <- initial_split(auctions, prop = 0.7, strata = "price")
+auctions_train  <- training(split)
+auctions_test   <- testing(split)
+
+```
+
+```{r}
+blueprint <- recipe(price ~ ., data = auctions_train) %>%
+  step_integer(bidder) %>%
+  step_center(all_numeric()) %>%
+  step_scale(all_numeric())
+
+```
+
+
+
+```{r}
+
+# create a resampling method
+cv <- trainControl(
+  method = "repeatedcv", 
+  number = 10, 
+  repeats = 5
+)
+```
+
+
+```{r}
+
+# linear regression model
+#include all possible main effects
+
+set.seed(123)
+cv_model <- train(
+  price ~ .,
+  data = auctions_train, 
+  method = "lm",
+  trControl = cv
+)
+
+summary(cv_model)
+
+```
+RMSE 21.45 
+R-squared:  0.949
+
+```{r}
+set.seed(123)
+cv_model_bp <- train(
+  blueprint, 
+  data = auctions_train, 
+  method = "lm",
+  trControl = cv
+)
+
+summary(cv_model_bp)
+```
+RMSE 0.616 
+R-squared:  0.6219
+
+```{r}
+#pcr
+set.seed(123)
+cv_pcr <- train(
+  price ~ .,
+  data = auctions_train, 
+  trControl = cv,
+  method = "pcr",
+  preProcess = c("center", "scale"),
+  tuneGrid = hyper_grid_p,
+  metric = "RMSE"
+)
+
+
+cv_pcr$results %>%
+  filter(ncomp == as.numeric(cv_pcr$bestTune))
+
+
+
+```
+
+RMSE 41.68654
+Rsquared  0.6621649
+MAE   41.68654
+
+
+```{r}
+#pls
+
+set.seed(123)
+cv_pls <- train(
+  price ~ ., 
+  data = auctions_train, 
+  trControl = cv,
+  method = "pls",
+  preProcess = c("center", "scale"),
+  tuneGrid = hyper_grid_p,
+  metric = "RMSE"
+)
+
+cv_pls$results %>%
+  filter(ncomp == as.numeric(cv_pls$bestTune))
+```
+
+RMSE         32.75345
+Rsquared     0.7871374
+MAE          19.26673
+   
+```{r}
+#regularized 
+X <- model.matrix(price ~ ., auctions_train)[, -1]
+
+Y <- log(auctions_train$price)
+
+hyper_grid_g <- expand.grid(
+  alpha = seq(0, 1, by = .25),
+  lambda = c(0.1, 10, 100, 1000, 10000)
+)
+
+```
+
+
+```{r}
+# perform resampling
+set.seed(123)
+cv_glmnet <- train(
+  x = X,
+  y = Y,
+  method = "glmnet",
+  preProc = c( "center", "scale"),
+  trControl = cv,
+  tuneGrid = hyper_grid_g,
+  tuneLength = 10
+)
+
+
+cv_glmnet$results %>%
+  filter(
+    alpha == cv_glmnet$bestTune$alpha,
+    lambda == cv_glmnet$bestTune$lambda
+  )
+```
+
+alpha 0
+lambda   0.1   
+RMSE 0.2451333
+Rsquared    0.705937   
+MAE     0.1463578
+           
+|model                          | RMSE      |R squared   |
+|linear model                   | 21.45     | 0.949      | 
+|linear model(preprocessing)    | 0.616     | 0.6219     | 
+|pcr model                      | 41.68654  | 0.6621649  |
+|pls model                      | 32.75345  | 0.7871374  | 
+|regularized regression model   | 0.2451333 | 0.705937   | 
+
+```{r}
+vip(cv_glmnet, num_features = 10, geom = "point")
+
+```
+
+
+
+```{r}
+p1 <- pdp::partial(cv_glmnet, pred.var = "bid", grid.resolution = 20) %>%
+  as_tibble() %>% 
+  mutate(yhat = exp(yhat)) %>%
+  ggplot(aes(bid, yhat)) +
+  geom_line() +
+  scale_y_continuous(limits = c(0, 400), labels = scales::dollar)
+
+p2 <- pdp::partial(cv_glmnet, pred.var = "biddermregestr", grid.resolution = 20) %>%
+  as_tibble() %>% 
+  mutate(yhat = exp(yhat)) %>%
+  ggplot(aes(biddermregestr, yhat)) +
+  geom_line() +
+  scale_y_continuous(limits = c(0, 300), labels = scales::dollar)   
+
+p3 <- pdp::partial(cv_glmnet, pred.var = "bidderadavisa1", grid.resolution = 20) %>%
+  as_tibble() %>% 
+  mutate(yhat = exp(yhat)) %>%
+  ggplot(aes(bidderadavisa1, yhat)) +
+  geom_line() +
+  scale_y_continuous(limits = c(0, 300), labels = scales::dollar)
+
+p4 <- pdp::partial(cv_glmnet, pred.var = "biddersavant51", grid.resolution = 20) %>%
+  as_tibble() %>% 
+  mutate(yhat = exp(yhat)) %>%
+  ggplot(aes(biddersavant51, yhat)) +
+  geom_line() +
+  scale_y_continuous(limits = c(0, 300), labels = scales::dollar)
+
+
+grid.arrange(p1, p2, p3, p4, nrow = 2)
+
+```
+
+

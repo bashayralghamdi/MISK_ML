@@ -16,11 +16,12 @@ library(tidyverse)
 library(rsample)
 library(caret)
 library(recipes)
-library("ROCR")
 library(vip)
 library(dplyr)
 library(Metrics) 
 library(pls)
+library(glmnet)  
+
 
 
 # Read in the data (csv format):
@@ -52,13 +53,25 @@ glimpse(auctions)
 summary(auctions)#there is missing value in children column
 
 #is there any missing value on the target 
-sum(is.na(auctions$price))#the number of missing value is 0
+#Plot the missing values.
+visdat::vis_miss(auctions_train, cluster = TRUE)
+#there a few missing value in "bidder" and "biderrat" columns
+sum(is.na(auctions))#the number of missing value is 27
+#remove missing value
+auctions <- auctions %>% 
+  na.omit()
 
 # initial dimension
 dim(auctions)
 
 # response variable
 head(auctions)
+
+#change the type of bidder from char to factor
+auctions$bidder <- as.factor(auctions$bidder)
+#save the new data as csv file
+write.csv(auctions,"data/auctions.csv", row.names = FALSE)
+
 
 #Split into training vs testing data
 set.seed(123)
@@ -85,11 +98,9 @@ auctions_train%>%
   ggplot(aes(price))+
   geom_histogram() #positive skwed 
 
-#to apply a transformation normalize
-price_log10 <- auctions_train
-price_log10$pricelog <- log10(price_log10$price)
-price_log10 %>% 
-  ggplot(aes(pricelog))+
+#apply a transformation normalize
+auctions%>% 
+  ggplot(aes(log10(price)))+
   geom_histogram()
 
 #relationship between price and bid
@@ -97,19 +108,8 @@ ggplot(aes(price,bid),data =auctions_train )+
   geom_point()+
   geom_smooth()
 
-price_log10$bidlog <- log10(price_log10$bid)
-price_log10 %>% 
-  ggplot(aes(bidlog))+
-  geom_histogram()
 
 
-#How many observations have missing values?
-sum(is.na(auctions_train))
-
-
-#Plot the missing values.
-visdat::vis_miss(auctions_train, cluster = TRUE)
-#there a few missing value in "bidder" and "biderrat" columns
 
 #Do any features have near-zero or zero variance
 remove_cols <- nearZeroVar(auctions_train, saveMetrics= TRUE) 
@@ -139,7 +139,10 @@ auctions_train%>%
 
 
 #the categorical features.
-auctions_train$bidder <- as.factor(auctions_train$bidder)
+#Error in { : 
+#task 1 failed - "Column 4 of x is of class character while 
+#matching column 4 of y is of class factor"
+
 auctions_train%>% 
   ggplot(aes(bidder))+
   geom_bar()
@@ -156,9 +159,7 @@ max(lump$count) #maximum number of counting levels
 
 
 blueprint <- recipe(price ~ ., data = auctions_train) %>%
-  step_modeimpute(bidder) %>% 
-  step_knnimpute(bidderrate) %>% 
-  step_integer(bidder) %>%
+  step_dummy(bidder,one_hot = TRUE) %>%
   step_center(all_numeric()) %>%
   step_scale(all_numeric()) 
 
@@ -187,15 +188,13 @@ knn_fit_bp <- train(
 #    use RMSE as preferred metric
 knn_fit <- train(
   price ~ .,
-  na.action=na.exclude,
   data = auctions_train, 
   method = "knn", 
   trControl = cv, 
   tuneGrid = hyper_grid,
   metric = "RMSE"
 )
-#I can't model it becouse there are missing values in object
-#so I write "na.action=na.exclude" to avoide the missing value error
+
 
 # evaluate results
 # print model results
@@ -213,7 +212,8 @@ ggplot(knn_fit_bp$results, aes(k, RMSE)) +
   geom_point() +
   scale_y_continuous(labels = scales::dollar)
 
-
+vip(knn_fit)
+vip(knn_fit_bp)
 
 
 # linear regression model
@@ -222,7 +222,6 @@ ggplot(knn_fit_bp$results, aes(k, RMSE)) +
 set.seed(123)
 cv_model <- train(
   price ~ .,
-  na.action=na.exclude,
   data = auctions_train, 
   method = "lm",
   trControl = cv
@@ -243,7 +242,6 @@ hyper_grid_p <- expand.grid(ncomp = seq(2, 100, length.out = 10))
 set.seed(123)
 cv_pcr <- train(
   price ~ .,
-  na.action=na.exclude,
   data = auctions_train, 
   trControl = cv,
   method = "pcr",
@@ -260,7 +258,6 @@ cv_pcr$results %>%
 set.seed(123)
 cv_pls <- train(
   price ~ ., 
-  na.action=na.exclude,
   data = auctions_train, 
   trControl = cv,
   method = "pls",
@@ -272,7 +269,7 @@ cv_pls <- train(
 cv_pls$results %>%
   filter(ncomp == as.numeric(cv_pls$bestTune))
 
-vip(p)
+vip(cv_pls)
 
 #regularized 
 X <- model.matrix(price ~ ., auctions_train)[, -1]
@@ -283,6 +280,28 @@ hyper_grid_g <- expand.grid(
   alpha = seq(0, 1, by = .25),
   lambda = c(0.1, 10, 100, 1000, 10000)
 )
+
+ridge <- glmnet(
+  x = X,
+  y = Y,
+  alpha = 0
+)
+
+plot(ridge, xvar = "lambda")
+
+lasso <- glmnet(
+  x = X,
+  y = Y,
+  alpha = 1
+)
+
+plot(lasso, xvar = "lambda")
+
+
+
+
+
+
 # perform resampling
 set.seed(123)
 cv_glmnet <- train(
@@ -291,11 +310,49 @@ cv_glmnet <- train(
   method = "glmnet",
   preProc = c( "center", "scale"),
   trControl = cv,
+  tuneGrid = hyper_grid_g,
   tuneLength = 10
 )
 
 
+cv_glmnet$results %>%
+  filter(
+    alpha == cv_glmnet$bestTune$alpha,
+    lambda == cv_glmnet$bestTune$lambda
+  )
 
+vip(cv_glmnet, num_features = 10, geom = "point")
+
+p1 <- pdp::partial(cv_glmnet, pred.var = "bid", grid.resolution = 20) %>%
+  as_tibble() %>% 
+  mutate(yhat = exp(yhat)) %>%
+  ggplot(aes(bid, yhat)) +
+  geom_line() +
+  scale_y_continuous(limits = c(0, 400), labels = scales::dollar)
+
+p2 <- pdp::partial(cv_glmnet, pred.var = "biddermregestr", grid.resolution = 20) %>%
+  as_tibble() %>% 
+  mutate(yhat = exp(yhat)) %>%
+  ggplot(aes(biddermregestr, yhat)) +
+  geom_line() +
+  scale_y_continuous(limits = c(0, 300), labels = scales::dollar)   
+
+p3 <- pdp::partial(cv_glmnet, pred.var = "bidderadavisa1", grid.resolution = 20) %>%
+  as_tibble() %>% 
+  mutate(yhat = exp(yhat)) %>%
+  ggplot(aes(bidderadavisa1, yhat)) +
+  geom_line() +
+  scale_y_continuous(limits = c(0, 300), labels = scales::dollar)
+
+p4 <- pdp::partial(cv_glmnet, pred.var = "biddersavant51", grid.resolution = 20) %>%
+  as_tibble() %>% 
+  mutate(yhat = exp(yhat)) %>%
+  ggplot(aes(biddersavant51, yhat)) +
+  geom_line() +
+  scale_y_continuous(limits = c(0, 300), labels = scales::dollar)
+
+
+grid.arrange(p1, p2, p3, p4, nrow = 2)
 
 
 

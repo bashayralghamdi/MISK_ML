@@ -1,0 +1,254 @@
+---
+title: "auction of xbox game"
+author: "Bashayr Alghamdi"
+date: "03/11/2020"
+output: html_document
+---
+
+analysis about auction of xbox game consoles on ebay
+https://www.modelingonlineauctions.com/datasets
+
+problem type: supervised regression
+response variable: Price (i.e.,28.0 - 501.8)
+features: 32
+observations: 119,390
+objective: use property attributes to predict the sale price of xbox game .
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# load packages
+library(tidyverse)
+library(rsample)
+library(caret)
+library(recipes)
+library(vip)
+library(dplyr)
+library(Metrics) 
+library(pls)
+
+
+```
+
+
+
+```{r}
+# Read in the data (csv format):
+auctions7 <- readr::read_csv("data/Xbox 7-day auctions.csv")
+auctions7$days <- 7
+
+auctions5 <- readr::read_csv("data/Xbox 5-day auctions.csv")
+auctions5$days <- 5
+
+auctions3 <- readr::read_csv("data/Xbox 3-day auctions.csv")
+auctions3$days <- 3
+
+#merge the dataset
+auctionmrg <- merge(auctions7,auctions5,by= c( "auctionid","bid","bidtime","bidder","bidderrate","openbid","price","days" ), all=TRUE)
+
+#finally this is our dataest
+auctions <- merge(auctionmrg,auctions3,by= c( "auctionid","bid","bidtime","bidder","bidderrate","openbid","price","days" ), all=TRUE)
+
+#change the type of bidder from char to factor
+auctions$bidder <- as.factor(auctions$bidder)
+
+#save the new data as csv file
+write.csv(auctions,"data/auctions.csv", row.names = FALSE)
+
+
+```
+
+## Data
+```{r}
+#get familiar with the data
+glimpse(auctions)
+summary(auctions)
+
+```
+
+## Target feature
+```{r}
+#plot the target
+#Is the response skewed?
+auctions%>% 
+  ggplot(aes(price))+
+  geom_histogram() #positive skewed 
+
+#apply a transformation normalize
+auctions%>% 
+  ggplot(aes(log10(price)))+
+  geom_histogram()
+
+```
+
+
+## Missing value
+```{r}
+#is there any missing value on the target 
+#Plot the missing values.
+visdat::vis_miss(auctions_train, cluster = TRUE)
+#there a few missing value in "bidder" and "biderrat" columns
+sum(is.na(auctions))#the number of missing value is 27
+#remove missing value
+auctions <- auctions %>% 
+  na.omit()
+
+```
+
+## Split 
+```{r}
+#Split into training vs testing data
+set.seed(123)
+split  <- initial_split(auctions, prop = 0.7, strata = "price")
+auctions_train  <- training(split)
+auctions_test   <- testing(split)
+
+# Do the distributions line up?  
+ggplot(auctions_train, aes(x = price)) + 
+  geom_line(aes(col="train"),
+            stat = "density", 
+            trim = TRUE,col = "black") + 
+  geom_line(aes(col="test"),
+            data = auctions_test, 
+            stat = "density", 
+            trim = TRUE, col = "red")
+
+
+```
+
+## Feature engineering
+### zero variance 
+```{r}
+#Do any features have near-zero or zero variance
+remove_cols <- nearZeroVar(auctions_train, saveMetrics= TRUE) 
+remove_cols
+#there are no features have near-zero or zero variance
+```
+
+### numeric features
+```{r}
+# auction id
+auctions_train%>% 
+  ggplot(aes(auctionid))+
+  geom_histogram()
+
+# bid
+auctions_train%>% 
+  ggplot(aes(bid))+
+  geom_histogram()
+
+#bid time
+auctions_train%>% 
+  ggplot(aes(bidtime))+
+  geom_histogram()
+
+#bidder rate
+auctions_train%>% 
+  ggplot(aes(bidderrate))+
+  geom_histogram()
+
+#open bid
+auctions_train%>% 
+  ggplot(aes(openbid))+
+  geom_histogram()
+```
+
+### Categorical features.
+```{r}
+auctions_train%>% 
+  ggplot(aes(bidder))+
+  geom_bar()
+
+lump <- auctions_train %>% 
+  select(bidder) %>% 
+  group_by(bidder) %>% 
+  mutate(count=n()) %>% 
+  arrange(count) 
+
+min(lump$count)  
+max(lump$count)
+
+```
+
+### blueprint
+
+```{r}
+blueprint <- recipe(price ~ ., data = auctions_train) %>%
+  step_integer(bidder) %>%
+  step_center(all_numeric()) %>%
+  step_scale(all_numeric()) 
+```
+
+
+
+
+```{r}
+# create a resampling method
+cv <- trainControl(
+  method = "repeatedcv", 
+  number = 10, 
+  repeats = 5
+)
+
+# create a hyperparameter grid search
+hyper_grid <- expand.grid(k = seq(1, 50, by = 2))
+```
+
+```{r}
+# execute grid search with knn model
+# use RMSE as preferred metric
+# use feature engineering
+knn_fit_bp <- train(
+  blueprint, 
+  data = auctions_train, 
+  method = "knn", 
+  trControl = cv, 
+  tuneGrid = hyper_grid,
+  metric = "RMSE"
+)
+```
+
+
+```{r}
+#without feature 
+knn_fit <- train(
+  price ~ .,
+  data = auctions_train, 
+  method = "knn", 
+  trControl = cv, 
+  tuneGrid = hyper_grid,
+  metric = "RMSE"
+)
+```
+
+
+
+```{r}
+# plot cross validation results
+ggplot(knn_fit$results, aes(k, RMSE)) + 
+  geom_line() +
+  geom_point() +
+  scale_y_continuous(labels = scales::dollar)
+
+ggplot(knn_fit_bp$results, aes(k, RMSE)) + 
+  geom_line() +
+  geom_point() +
+  scale_y_continuous(labels = scales::dollar)
+```
+
+
+|model                   |k  | RMSE      |R squared  |MSE        |
+|KNN model               | 1 | 1.772333  | 0.9973494 | 0.1428544 |
+|KNN model(preprocessing)| 1 | 0.4242841 | 0.8173649 | 0.1542975 |
+
+KNN model with feature engineering is better because we want to minimize RMSE 
+KNN model without feature engineering is take a long time to run 
+
+
+```{r}
+vip(knn_fit_bp)
+```
+
+
+
