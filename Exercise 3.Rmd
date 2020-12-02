@@ -1,0 +1,39 @@
+---
+title: "auction of xbox game"
+author: "Bashayr Alghamdi"
+date: "03/11/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# load packages
+library(tidyverse)
+library(rsample)
+library(caret)
+library(recipes)
+library(vip)
+library(dplyr)
+library(Metrics) 
+library(pls)
+
+```
+
+```{r}
+auction <- readr::read_csv("data/auctions.csv")
+spec(auction)
+```
+
+```{r}
+#Split into training vs testing data
+set.seed(123)
+split  <- initial_split(auctions, prop = 0.7, strata = "price")
+auctions_train  <- training(split)
+auctions_test   <- testing(split)
+
+```
+
+
+
+
